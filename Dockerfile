@@ -134,7 +134,8 @@ RUN pip install --no-cache-dir \
         optuna \
         jupyterlab \
         ipywidgets \
-        tqdm
+        tqdm \
+        tensorboard
 
 # ── 11. Download dataset ──────────────────────────────────────────────────────
 # Stored under /data/ so it survives even when /workspace is overridden

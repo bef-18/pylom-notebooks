@@ -3,7 +3,7 @@ services:
   pylom-notebooks:
     image: pylom-notebooks:latest
     build:
-      context: .
+      context: https://github.com/bef-18/pylom-notebooks.git
       dockerfile: Dockerfile
     container_name: pylom_notebooks
 

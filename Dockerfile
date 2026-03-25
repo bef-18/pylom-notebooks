@@ -43,6 +43,7 @@ ARG DATA_URL=https://huggingface.co/datasets/bef-18/pyLOM_examples/resolve/main/
 ARG DEBIAN_FRONTEND=noninteractive
 
 # ── 1. System packages ────────────────────────────────────────────────────────
+# libopenblas-dev + liblapack-dev replace Intel MKL (USE_MKL=OFF in options.cfg)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.10 \
         python3.10-dev \
@@ -58,6 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
         libgl1-mesa-glx \
         libglib2.0-0 \
+        libopenblas-dev \
+        liblapack-dev \
     && rm -rf /var/lib/apt/lists/* \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
 
@@ -70,35 +73,47 @@ RUN git clone https://github.com/ArnauMiro/pyLowOrder.git \
  && cd pyLowOrder \
  && git checkout ${PYLOM_COMMIT}
 
-# ── 4. Apply bug-fix patches ──────────────────────────────────────────────────
-# 4a. plots.py — VTK version comparison tuple: (9,) → (9,2,2)
+# ── 4. Patch options.cfg — disable MKL and compiled modules ──────────────────
+# The upstream options.cfg has USE_MKL=ON and USE_COMPILED=OFF.
+# Intel MKL is not available in the Docker base image; switch to OpenBLAS.
+# USE_COMPILED=OFF is already set but we enforce it explicitly here too.
+RUN sed -i \
+        's/^USE_MKL\s*=\s*ON/USE_MKL     = OFF/' \
+        /opt/pyLowOrder/options.cfg \
+ && sed -i \
+        's/^USE_COMPILED\s*=\s*ON/USE_COMPILED = OFF/' \
+        /opt/pyLowOrder/options.cfg \
+ && grep -E "USE_MKL|USE_COMPILED" /opt/pyLowOrder/options.cfg
+
+# ── 5. Apply bug-fix patches ──────────────────────────────────────────────────
+# 5a. plots.py — VTK version comparison tuple: (9,) → (9,2,2)
 RUN sed -i \
     "s/pv.vtk_version_info < (9,)/pv.vtk_version_info < (9,2,2)/g" \
     /opt/pyLowOrder/pyLOM/utils/plots.py
 
-# 4b. NN/GAVI/__init__.py — explicit module import before `del`
+# 5b. NN/GAVI/__init__.py — explicit module import before `del`
 RUN sed -i \
     "/^from \.wrapper import vae_R/i from . import wrapper, utils" \
     /opt/pyLowOrder/pyLOM/NN/GAVI/__init__.py
 
-# 4c. NN/__init__.py — explicit utils import before `del os, torch, utils`
+# 5c. NN/__init__.py — explicit utils import before `del os, torch, utils`
 RUN sed -i \
     "/^del os, torch, utils/i from . import utils" \
     /opt/pyLowOrder/pyLOM/NN/__init__.py
 
-# 4d. NN/utils.py — handle numpy array input in Dataset._process_variables_out
+# 5d. NN/utils.py — handle numpy array input in Dataset._process_variables_out
 RUN sed -i \
     "s/variable = variable\.clone()\.detach() #torch\.tensor(variable)/variable = variable.clone().detach() if isinstance(variable, torch.Tensor) else torch.tensor(variable)/" \
     /opt/pyLowOrder/pyLOM/NN/utils.py
 
-# ── 5. Install pyLOM dependencies ─────────────────────────────────────────────
+# ── 6. Install pyLOM dependencies ─────────────────────────────────────────────
 WORKDIR /opt/pyLowOrder
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── 6. Install pyLOM (editable, USE_COMPILED=OFF — pure Python) ───────────────
+# ── 7. Install pyLOM (USE_COMPILED=OFF, USE_MKL=OFF) ─────────────────────────
 RUN pip install --no-cache-dir -e .
 
-# ── 7. PyTorch — CUDA 12.6 wheel ─────────────────────────────────────────────
+# ── 8. PyTorch — CUDA 12.6 wheel ─────────────────────────────────────────────
 # Uses the cu126 index so the wheel is ABI-compatible with driver 12.7.
 # torch>=2.11 (the default pip version) ships with CUDA 13.0 and requires
 # driver >=12.8, which breaks on systems reporting "CUDA Version: 12.7".
@@ -106,11 +121,11 @@ RUN pip install --no-cache-dir \
         torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cu126
 
-# ── 8. CuPy 13.3.0 — CUDA 12.x compatible ────────────────────────────────────
+# ── 9. CuPy 13.3.0 — CUDA 12.x compatible ────────────────────────────────────
 # CuPy 14.x requires CUDA 12.9 (driver 12.8+). Pin to 13.3.0.
 RUN pip install --no-cache-dir "cupy-cuda12x==13.3.0"
 
-# ── 9. NN / visualisation / notebook dependencies ────────────────────────────
+# ── 10. NN / visualisation / notebook dependencies ───────────────────────────
 RUN pip install --no-cache-dir \
         pyvista \
         scipy \
@@ -121,20 +136,20 @@ RUN pip install --no-cache-dir \
         ipywidgets \
         tqdm
 
-# ── 10. Download dataset ──────────────────────────────────────────────────────
+# ── 11. Download dataset ──────────────────────────────────────────────────────
 # Stored under /data/ so it survives even when /workspace is overridden
 # by a volume mount.  The entrypoint creates a symlink at /workspace/CYLINDER.h5.
 RUN mkdir -p /data \
  && wget --progress=dot:giga -O /data/CYLINDER.h5 "${DATA_URL}"
 
-# ── 11. Set up workspace and copy notebooks ───────────────────────────────────
+# ── 12. Set up workspace and copy notebooks ──────────────────────────────────
 RUN mkdir -p /workspace
 COPY example_POD_cylinder.ipynb    /workspace/
 COPY example_SHRED.ipynb           /workspace/
 COPY example_VAE_cylinder.ipynb    /workspace/
 COPY example_GAVI_R_cylinder.ipynb /workspace/
 
-# ── 12. Jupyter configuration ─────────────────────────────────────────────────
+# ── 13. Jupyter configuration ─────────────────────────────────────────────────
 RUN jupyter lab --generate-config \
  && printf '%s\n' \
     "c.ServerApp.ip = '0.0.0.0'" \
@@ -144,7 +159,7 @@ RUN jupyter lab --generate-config \
     "c.ServerApp.password = ''" \
     >> /root/.jupyter/jupyter_lab_config.py
 
-# ── 13. Entrypoint script ─────────────────────────────────────────────────────
+# ── 14. Entrypoint script ─────────────────────────────────────────────────────
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

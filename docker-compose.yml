@@ -1,0 +1,41 @@
+services:
+
+  pylom-notebooks:
+    image: pylom-notebooks:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pylom_notebooks
+
+    # Requires nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    ports:
+      - "8888:8888"
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYVISTA_OFF_SCREEN=true
+
+    # Persist notebook outputs across restarts.
+    # Docker creates ./outputs/ on the host automatically.
+    volumes:
+      - ./outputs:/workspace/outputs
+
+    working_dir: /workspace
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/lab"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
